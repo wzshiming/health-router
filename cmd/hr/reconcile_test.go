@@ -20,11 +20,8 @@ const (
 
 var ttS = recordShape{Line: "默认", TTL: 60, Remark: "hc"}
 
-// Desired fields the contract fixes for a primary record and for a duplicate.
-var (
-	ttPrimaryFields   = []string{"RecordId", "Type", "Value", "Line", "LineId", "TTL", "Remark", "Status"}
-	ttDuplicateFields = []string{"Line", "LineId", "TTL", "Remark", "Status"}
-)
+// ttDesiredFields lists the Desired fields compared for every expected change.
+var ttDesiredFields = []string{"RecordId", "Type", "Value", "Line", "LineId", "TTL", "Remark", "Status"}
 
 type ttChange struct {
 	id      uint64
@@ -115,7 +112,7 @@ func TestReconcile(t *testing.T) {
 			creates: []string{ttA},
 			changes: []ttChange{
 				{id: 1, reason: reasonUnmanaged, desired: ttShaped(1, ttX, "DISABLE"),
-					has: []string{"Line: 电信 -> 默认", "TTL: 600 -> 60", "Status: ENABLE -> DISABLE", "Remark:  -> hc"}},
+					diffs: []string{"Line: 电信 -> 默认", "TTL: 600 -> 60", "Status: ENABLE -> DISABLE", "Remark:  -> hc"}},
 			},
 		},
 		{
@@ -152,8 +149,9 @@ func TestReconcile(t *testing.T) {
 			},
 			alive: []string{ttA},
 			changes: []ttChange{
-				{id: 1, reason: reasonDuplicate, desired: &dnspod.RecordListItem{Status: new("DISABLE")},
-					diffs: []string{"Status: ENABLE -> DISABLE"}},
+				{id: 1, reason: reasonDuplicate,
+					desired: &dnspod.RecordListItem{RecordId: new(uint64(1)), Type: new("A"), Value: new(ttA), Status: new("DISABLE")},
+					diffs:   []string{"Status: ENABLE -> DISABLE"}},
 			},
 		},
 		{
@@ -192,6 +190,18 @@ func TestReconcile(t *testing.T) {
 			changes: []ttChange{
 				{id: 1, reason: reasonDead, desired: ttShaped(1, ttB, "DISABLE")},
 				{id: 2, reason: reasonDuplicate, desired: ttRec(2, ttB, "联通", 60, "hc", "DISABLE")},
+			},
+		},
+		{
+			name: "P9 first shape-line record is primary over a later one",
+			records: []*dnspod.RecordListItem{
+				ttShaped(1, ttA, "ENABLE"),
+				ttShaped(2, ttA, "ENABLE"),
+			},
+			alive: []string{ttA},
+			changes: []ttChange{
+				{id: 2, reason: reasonDuplicate, desired: ttShaped(2, ttA, "DISABLE"),
+					diffs: []string{"Status: ENABLE -> DISABLE"}},
 			},
 		},
 		{
@@ -245,6 +255,22 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		{
+			name: "P13 changes follow remote order across interleaved values",
+			records: []*dnspod.RecordListItem{
+				ttRec(1, ttA, "电信", 60, "hc", "ENABLE"),
+				ttShaped(2, ttX, "ENABLE"),
+				ttRec(3, ttA, "联通", 60, "hc", "ENABLE"),
+				ttShaped(4, ttB, "ENABLE"),
+			},
+			alive: []string{ttA},
+			changes: []ttChange{
+				{id: 1, reason: reasonAlive, desired: ttShaped(1, ttA, "ENABLE")},
+				{id: 2, reason: reasonUnmanaged, desired: ttShaped(2, ttX, "DISABLE")},
+				{id: 3, reason: reasonDuplicate, desired: ttRec(3, ttA, "联通", 60, "hc", "DISABLE")},
+				{id: 4, reason: reasonDead, desired: ttShaped(4, ttB, "DISABLE")},
+			},
+		},
+		{
 			name:    "P14 status-nil record otherwise in shape needs nothing",
 			records: []*dnspod.RecordListItem{ttWith(ttShaped(1, ttX, ""), func(r *dnspod.RecordListItem) { r.Status = nil })},
 			alive:   []string{ttA},
@@ -283,14 +309,10 @@ func TestReconcile(t *testing.T) {
 				if c.Reason != w.reason {
 					t.Errorf("record %d: Reason = %s, want %s", w.id, ttReason(c.Reason), ttReason(w.reason))
 				}
-				fields := ttPrimaryFields
-				if w.reason == reasonDuplicate {
-					fields = ttDuplicateFields
-				}
 				if c.Desired == nil {
 					t.Errorf("record %d: Desired is nil", w.id)
 				} else {
-					for _, d := range ttFieldDiffs(c.Desired, w.desired, fields...) {
+					for _, d := range ttFieldDiffs(c.Desired, w.desired, ttDesiredFields...) {
 						t.Errorf("record %d: Desired.%s", w.id, d)
 					}
 				}

@@ -34,9 +34,7 @@ type reconcilePlan struct {
 	Changes []recordChange // remote record order
 }
 
-// reconcile decides, without I/O, which A records of one subdomain to create or
-// modify so that each Value keeps one record in the managed shape — enabled when
-// alive, disabled otherwise — and every extra record of that Value is disabled.
+// reconcile normalizes one record per Value and only disables its duplicates.
 func reconcile(records []*dnspod.RecordListItem, configured, alive []string, shape recordShape) reconcilePlan {
 	configuredSet := ipSet(configured)
 	aliveSet := ipSet(alive)

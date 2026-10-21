@@ -154,7 +154,6 @@ func checkAndUpdateDNS(ctx context.Context, client *dnspod.Client, configured, a
 	return nil
 }
 
-// changeLogFormats returns the dry-run and live log formats for a change; both take (IP, subdomain, diffs).
 func changeLogFormats(reason changeReason) (dryRunFormat, liveFormat string) {
 	switch reason {
 	case reasonDead:
