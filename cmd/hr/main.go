@@ -44,8 +44,8 @@ func init() {
 }
 
 func main() {
-	if secretId == "" || secretKey == "" || testHost == "" || len(subdomains) == 0 || domain == "" {
-		log.Fatal("Required parameters are missing. Please provide --secret-id, --secret-key, --check-host, --subdomains, and --domain.")
+	if secretId == "" || secretKey == "" || testHost == "" || len(ips) == 0 || len(subdomains) == 0 || domain == "" {
+		log.Fatal("Required parameters are missing. Please provide --secret-id, --secret-key, --check-host, --ip, --subdomains, and --domain.")
 	}
 	client, err := dnspod.NewClientWithSecretId(
 		secretId, secretKey, "")
@@ -68,10 +68,10 @@ func randomDuration(max time.Duration) time.Duration {
 }
 
 func run(ctx context.Context, client *dnspod.Client) {
-	aliveIPs, deadIPs := testIPs(ctx, testHost, ips)
+	alive, _ := testIPs(ctx, testHost, ips)
 
 	for _, subdomain := range subdomains {
-		err := checkAndUpdateDNS(ctx, client, aliveIPs, deadIPs, subdomain, domain, line, ttl)
+		err := checkAndUpdateDNS(ctx, client, ips, alive, subdomain, domain, line, ttl)
 		if err != nil {
 			fmt.Printf("Check and update DNS err: %s", err.Error())
 			return
@@ -79,7 +79,7 @@ func run(ctx context.Context, client *dnspod.Client) {
 	}
 }
 
-func checkAndUpdateDNS(ctx context.Context, client *dnspod.Client, aliveIPs, deadIPs []string, subdomain, domain, recordLine string, ttl uint64) error {
+func checkAndUpdateDNS(ctx context.Context, client *dnspod.Client, configured, alive []string, subdomain, domain, recordLine string, ttl uint64) error {
 	describeRecordListResponse, err := client.DescribeRecordListWithContext(ctx, &dnspod.DescribeRecordListRequest{
 		Domain:    new(domain),
 		Subdomain: new(subdomain),
@@ -98,169 +98,82 @@ func checkAndUpdateDNS(ctx context.Context, client *dnspod.Client, aliveIPs, dea
 		records = describeRecordListResponse.Response.RecordList
 	}
 
-	handleRecords := []*dnspod.RecordListItem{}
-	for _, record := range records {
-		if record.Type != nil && *record.Type != "A" {
+	shape := recordShape{Line: recordLine, TTL: ttl, Remark: remark}
+	plan := reconcile(records, configured, alive, shape)
+	if len(plan.Creates) == 0 && len(plan.Changes) == 0 {
+		log.Printf("No DNS records need to be updated for Subdomain: %s", subdomain)
+		return nil
+	}
+
+	for _, ip := range plan.Creates {
+		if dryRun {
+			log.Printf("Dry run: would add DNS record for IP: %s, Subdomain: %s", ip, subdomain)
 			continue
 		}
-
-		// log.Printf("Existing record: %s", formatRecord(record))
-		handleRecords = append(handleRecords, record)
-	}
-
-	var updated bool
-
-	for _, ip := range aliveIPs {
-		found := false
-		var record *dnspod.RecordListItem
-		for _, r := range handleRecords {
-			if r.Value != nil && *r.Value == ip {
-				found = true
-				record = r
-				break
-			}
-		}
-
-		if !found {
-			updated = true
-			if dryRun {
-				log.Printf("Dry run: would add DNS record for IP: %s, Subdomain: %s", ip, subdomain)
-				continue
-			}
-			// Add DNS record
-			log.Printf("Add DNS record for IP: %s, Subdomain: %s", ip, subdomain)
-			_, err := client.CreateRecordWithContext(ctx, &dnspod.CreateRecordRequest{
-				Domain:     new(domain),
-				RecordType: new("A"),
-				RecordLine: new(recordLine),
-				SubDomain:  new(subdomain),
-				Value:      new(ip),
-				TTL:        new(ttl),
-				Remark:     new(remark),
-			})
-			if err != nil {
-				log.Printf("Failed to create record for %s: %s", ip, err.Error())
-			}
-		} else {
-			// check difference in line or ttl
-			diffs := diffRecords(record, &dnspod.RecordListItem{
-				RecordId: record.RecordId,
-				Type:     new("A"),
-				Line:     new(recordLine),
-				Value:    new(ip),
-				TTL:      new(ttl),
-				Remark:   new(remark),
-				Status:   new("ENABLE"),
-			})
-
-			if len(diffs) != 0 {
-				updated = true
-				if dryRun {
-					log.Printf("Dry run: would modify DNS record for IP: %s, Subdomain: %s, Differences: %v", ip, subdomain, diffs)
-					continue
-				}
-				// Modify DNS record
-				log.Printf("Modify DNS record for IP: %s, Subdomain: %s, Differences: %v", ip, subdomain, diffs)
-				_, err := client.ModifyRecordWithContext(ctx, &dnspod.ModifyRecordRequest{
-					Domain:     new(domain),
-					RecordId:   record.RecordId,
-					RecordType: new("A"),
-					RecordLine: new(recordLine),
-					SubDomain:  new(subdomain),
-					Value:      new(ip),
-					TTL:        new(ttl),
-					Remark:     new(remark),
-					Status:     new("ENABLE"),
-				})
-				if err != nil {
-					log.Printf("Failed to modify record for %s: %s", ip, err.Error())
-				}
-			}
+		log.Printf("Add DNS record for IP: %s, Subdomain: %s", ip, subdomain)
+		_, err := client.CreateRecordWithContext(ctx, &dnspod.CreateRecordRequest{
+			Domain:     new(domain),
+			RecordType: new("A"),
+			RecordLine: new(shape.Line),
+			SubDomain:  new(subdomain),
+			Value:      new(ip),
+			TTL:        new(shape.TTL),
+			Remark:     new(shape.Remark),
+		})
+		if err != nil {
+			log.Printf("Failed to create record for %s: %s", ip, err.Error())
 		}
 	}
 
-	for _, ip := range deadIPs {
-		found := false
-		var record *dnspod.RecordListItem
-
-		for _, r := range handleRecords {
-			if r.Value != nil && *r.Value == ip {
-				found = true
-				record = r
-				break
-			}
+	for _, change := range plan.Changes {
+		ip := *change.Record.Value
+		dryRunFormat, liveFormat := changeLogFormats(change.Reason)
+		if dryRun {
+			log.Printf(dryRunFormat, ip, subdomain, change.Diffs)
+			continue
 		}
-
-		if found {
-			diffs := diffRecords(record, &dnspod.RecordListItem{
-				RecordId: record.RecordId,
-				Type:     new("A"),
-				Line:     new(recordLine),
-				Value:    new(ip),
-				TTL:      new(ttl),
-				Remark:   new(remark),
-				Status:   new("DISABLE"),
-			})
-
-			if len(diffs) != 0 {
-				updated = true
-				// Remove DNS record
-				if dryRun {
-					log.Printf("Dry run: would remove DNS record for IP: %s, Subdomain: %s, Differences: %v", ip, subdomain, diffs)
-					continue
-				}
-
-				log.Printf("Remove DNS record for IP: %s, Subdomain: %s, Differences: %v", ip, subdomain, diffs)
-				_, err := client.ModifyRecordWithContext(ctx, &dnspod.ModifyRecordRequest{
-					Domain:     new(domain),
-					RecordId:   record.RecordId,
-					RecordType: new("A"),
-					RecordLine: new(recordLine),
-					SubDomain:  new(subdomain),
-					Value:      new(ip),
-					TTL:        new(ttl),
-					Remark:     new(remark),
-					Status:     new("DISABLE"),
-				})
-				if err != nil {
-					log.Printf("Failed to delete record for %s: %s", ip, err.Error())
-				}
-			}
+		log.Printf(liveFormat, ip, subdomain, change.Diffs)
+		desired := change.Desired
+		_, err := client.ModifyRecordWithContext(ctx, &dnspod.ModifyRecordRequest{
+			Domain:       new(domain),
+			SubDomain:    new(subdomain),
+			RecordId:     desired.RecordId,
+			RecordType:   desired.Type,
+			RecordLine:   desired.Line,
+			RecordLineId: desired.LineId, // set only for duplicates, which keep their own line
+			Value:        desired.Value,
+			TTL:          desired.TTL,
+			Remark:       desired.Remark,
+			Status:       desired.Status,
+		})
+		if err != nil {
+			log.Printf("Failed to modify record for %s: %s", ip, err.Error())
 		}
-	}
-
-	if !updated {
-		log.Printf("No DNS records need to be updated for Subdomain: %s", subdomain)
 	}
 
 	return nil
 }
 
-func formatRecord(record *dnspod.RecordListItem) string {
-	return fmt.Sprintf("ID=%d, Type=%s, Value=%s, SubDomain=%s, Status=%s, Line=%s, Remark=%s", *record.RecordId, *record.Type, *record.Value, *record.Name, *record.Status, *record.Line, *record.Remark)
+// changeLogFormats returns the dry-run and live log formats for a change; both take (IP, subdomain, diffs).
+func changeLogFormats(reason changeReason) (dryRunFormat, liveFormat string) {
+	switch reason {
+	case reasonDead:
+		return "Dry run: would remove DNS record for IP: %s, Subdomain: %s, Differences: %v",
+			"Remove DNS record for IP: %s, Subdomain: %s, Differences: %v"
+	case reasonUnmanaged:
+		return "Dry run: would disable unmanaged record for IP: %s, Subdomain: %s, Differences: %v",
+			"Disable unmanaged record for IP: %s, Subdomain: %s, Differences: %v"
+	case reasonDuplicate:
+		return "Dry run: would disable duplicate record for IP: %s, Subdomain: %s, Differences: %v",
+			"Disable duplicate record for IP: %s, Subdomain: %s, Differences: %v"
+	default:
+		return "Dry run: would modify DNS record for IP: %s, Subdomain: %s, Differences: %v",
+			"Modify DNS record for IP: %s, Subdomain: %s, Differences: %v"
+	}
 }
 
-func diffRecords(existing, desired *dnspod.RecordListItem) []string {
-	var diffs []string
-	if existing.Type != nil && desired.Type != nil && *existing.Type != *desired.Type {
-		diffs = append(diffs, fmt.Sprintf("Type: %s -> %s", *existing.Type, *desired.Type))
-	}
-	if existing.Value != nil && desired.Value != nil && *existing.Value != *desired.Value {
-		diffs = append(diffs, fmt.Sprintf("Value: %s -> %s", *existing.Value, *desired.Value))
-	}
-	if existing.Line != nil && desired.Line != nil && *existing.Line != *desired.Line {
-		diffs = append(diffs, fmt.Sprintf("Line: %s -> %s", *existing.Line, *desired.Line))
-	}
-	if existing.TTL != nil && desired.TTL != nil && *existing.TTL != *desired.TTL {
-		diffs = append(diffs, fmt.Sprintf("TTL: %d -> %d", *existing.TTL, *desired.TTL))
-	}
-	if existing.Status != nil && desired.Status != nil && *existing.Status != *desired.Status {
-		diffs = append(diffs, fmt.Sprintf("Status: %s -> %s", *existing.Status, *desired.Status))
-	}
-	if existing.Remark != nil && desired.Remark != nil && *existing.Remark != *desired.Remark {
-		diffs = append(diffs, fmt.Sprintf("Remark: %s -> %s", *existing.Remark, *desired.Remark))
-	}
-	return diffs
+func formatRecord(record *dnspod.RecordListItem) string {
+	return fmt.Sprintf("ID=%d, Type=%s, Value=%s, SubDomain=%s, Status=%s, Line=%s, Remark=%s", *record.RecordId, *record.Type, *record.Value, *record.Name, *record.Status, *record.Line, *record.Remark)
 }
 
 func testIPs(ctx context.Context, host string, ips []string) ([]string, []string) {
