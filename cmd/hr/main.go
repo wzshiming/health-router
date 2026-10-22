@@ -35,7 +35,7 @@ func init() {
 	pflag.StringVar(&testHost, "check-host", testHost, "Host to test connectivity against")
 	pflag.StringSliceVar(&subdomains, "subdomains", subdomains, "Subdomains to manage")
 	pflag.StringVar(&domain, "domain", domain, "Domain to manage (e.g., 'example.com')")
-	pflag.StringVar(&line, "line", line, "DNS record line (e.g., 'Default')")
+	pflag.StringVar(&line, "line", line, "DNS record line name as returned by DNSPod (e.g., '默认')")
 	pflag.BoolVar(&dryRun, "dry-run", dryRun, "If set, will not make any changes to DNS records")
 	pflag.Uint64Var(&ttl, "ttl", ttl, "TTL for DNS records (in seconds)")
 	pflag.StringVar(&remark, "remark", remark, "Remark for DNS records")
@@ -44,8 +44,8 @@ func init() {
 }
 
 func main() {
-	if secretId == "" || secretKey == "" || testHost == "" || len(ips) == 0 || len(subdomains) == 0 || domain == "" {
-		log.Fatal("Required parameters are missing. Please provide --secret-id, --secret-key, --check-host, --ip, --subdomains, and --domain.")
+	if secretId == "" || secretKey == "" || testHost == "" || len(ips) == 0 || len(subdomains) == 0 || domain == "" || line == "" {
+		log.Fatal("Required parameters are missing. Please provide --secret-id, --secret-key, --check-host, --ip, --subdomains, --domain, and --line.")
 	}
 	client, err := dnspod.NewClientWithSecretId(
 		secretId, secretKey, "")
@@ -81,8 +81,9 @@ func run(ctx context.Context, client *dnspod.Client) {
 
 func checkAndUpdateDNS(ctx context.Context, client *dnspod.Client, configured, alive []string, subdomain, domain, recordLine string, ttl uint64) error {
 	describeRecordListResponse, err := client.DescribeRecordListWithContext(ctx, &dnspod.DescribeRecordListRequest{
-		Domain:    new(domain),
-		Subdomain: new(subdomain),
+		Domain:     new(domain),
+		Subdomain:  new(subdomain),
+		RecordLine: new(recordLine),
 	})
 
 	var records []*dnspod.RecordListItem
@@ -140,7 +141,7 @@ func checkAndUpdateDNS(ctx context.Context, client *dnspod.Client, configured, a
 			RecordId:     desired.RecordId,
 			RecordType:   desired.Type,
 			RecordLine:   desired.Line,
-			RecordLineId: desired.LineId, // set only for duplicates, which keep their own line
+			RecordLineId: desired.LineId,
 			Value:        desired.Value,
 			TTL:          desired.TTL,
 			Remark:       desired.Remark,
