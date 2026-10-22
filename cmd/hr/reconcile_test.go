@@ -75,12 +75,22 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		{
-			name:    "P4 alive record moves to the shape line without its LineId",
+			name:    "AC1 alive record on another line is untouched and the IP is created",
 			records: []*dnspod.RecordListItem{ttLineID(ttRec(1, ttA, "电信", 60, "hc", "DISABLE"), "10=0")},
 			alive:   []string{ttA},
-			changes: []ttChange{
-				{id: 1, reason: reasonAlive, desired: ttShaped(1, ttA, "ENABLE"), has: []string{"Line: 电信 -> 默认"}},
-			},
+			creates: []string{ttA},
+		},
+		{
+			name:    "AC2a dead record on another line is untouched",
+			records: []*dnspod.RecordListItem{ttRec(1, ttB, "电信", 60, "hc", "ENABLE")},
+			alive:   []string{ttA},
+			creates: []string{ttA},
+		},
+		{
+			name:    "AC2b unmanaged record on another line is untouched",
+			records: []*dnspod.RecordListItem{ttRec(1, ttX, "电信", 600, "", "ENABLE")},
+			alive:   []string{ttA},
+			creates: []string{ttA},
 		},
 		{
 			name:    "P4 alive record remark is normalized",
@@ -106,90 +116,101 @@ func TestReconcile(t *testing.T) {
 			creates: []string{ttA},
 		},
 		{
-			name:    "P6 unmanaged record is disabled and normalized",
-			records: []*dnspod.RecordListItem{ttRec(1, ttX, "电信", 600, "", "ENABLE")},
+			name:    "AC7a alive record on the shape line is normalized keeping its LineId",
+			records: []*dnspod.RecordListItem{ttLineID(ttRec(1, ttA, "默认", 600, "old", "DISABLE"), "0")},
+			alive:   []string{ttA},
+			changes: []ttChange{
+				{id: 1, reason: reasonAlive, desired: ttLineID(ttShaped(1, ttA, "ENABLE"), "0"),
+					diffs: []string{"TTL: 600 -> 60", "Status: DISABLE -> ENABLE", "Remark: old -> hc"}},
+			},
+		},
+		{
+			name:    "AC7b unmanaged record on the shape line is disabled and normalized",
+			records: []*dnspod.RecordListItem{ttRec(1, ttX, "默认", 600, "", "ENABLE")},
 			alive:   []string{ttA},
 			creates: []string{ttA},
 			changes: []ttChange{
 				{id: 1, reason: reasonUnmanaged, desired: ttShaped(1, ttX, "DISABLE"),
-					diffs: []string{"Line: 电信 -> 默认", "TTL: 600 -> 60", "Status: ENABLE -> DISABLE", "Remark:  -> hc"}},
+					diffs: []string{"TTL: 600 -> 60", "Status: ENABLE -> DISABLE", "Remark:  -> hc"}},
 			},
 		},
 		{
-			name:    "P7 unmanaged record disabled in shape needs nothing",
-			records: []*dnspod.RecordListItem{ttShaped(1, ttX, "DISABLE")},
-			alive:   []string{ttA},
-			creates: []string{ttA},
-		},
-		{
-			name: "P8 duplicate beside the shape-line record is disabled as is",
+			name: "AC3 same-value record on another line beside the primary is not a duplicate",
 			records: []*dnspod.RecordListItem{
 				ttLineID(ttRec(1, ttA, "电信", 60, "hc", "ENABLE"), "10=0"),
 				ttShaped(2, ttA, "ENABLE"),
 			},
 			alive: []string{ttA},
-			changes: []ttChange{
-				{id: 1, reason: reasonDuplicate, desired: ttLineID(ttRec(1, ttA, "电信", 60, "hc", "DISABLE"), "10=0"),
-					diffs: []string{"Status: ENABLE -> DISABLE"}},
-			},
 		},
 		{
 			name: "P8 duplicate already disabled needs nothing",
 			records: []*dnspod.RecordListItem{
-				ttLineID(ttRec(1, ttA, "电信", 60, "hc", "DISABLE"), "10=0"),
-				ttShaped(2, ttA, "ENABLE"),
+				ttShaped(1, ttA, "ENABLE"),
+				ttShaped(2, ttA, "DISABLE"),
 			},
 			alive: []string{ttA},
 		},
 		{
-			name: "P8 nil-line record is a duplicate keeping its nil fields",
+			name: "AC4a nil-line record is untouched and the IP is created",
+			records: []*dnspod.RecordListItem{
+				{RecordId: new(uint64(1)), Type: new("A"), Value: new(ttA), Status: new("ENABLE")},
+			},
+			alive:   []string{ttA},
+			creates: []string{ttA},
+		},
+		{
+			name: "AC4b nil-line record beside the primary is not a duplicate",
 			records: []*dnspod.RecordListItem{
 				{RecordId: new(uint64(1)), Type: new("A"), Value: new(ttA), Status: new("ENABLE")},
 				ttShaped(2, ttA, "ENABLE"),
 			},
 			alive: []string{ttA},
-			changes: []ttChange{
-				{id: 1, reason: reasonDuplicate,
-					desired: &dnspod.RecordListItem{RecordId: new(uint64(1)), Type: new("A"), Value: new(ttA), Status: new("DISABLE")},
-					diffs:   []string{"Status: ENABLE -> DISABLE"}},
-			},
 		},
 		{
-			name: "P9 first record is primary when none is on the shape line",
+			name: "AC5 no record is adopted as primary when none is on the shape line",
 			records: []*dnspod.RecordListItem{
 				ttRec(1, ttA, "电信", 60, "hc", "ENABLE"),
 				ttRec(2, ttA, "联通", 60, "hc", "ENABLE"),
 			},
+			alive:   []string{ttA},
+			creates: []string{ttA},
+		},
+		{
+			name: "AC6 duplicate on the shape line is disabled keeping its LineId",
+			records: []*dnspod.RecordListItem{
+				ttShaped(1, ttA, "ENABLE"),
+				ttLineID(ttShaped(2, ttA, "ENABLE"), "0"),
+			},
 			alive: []string{ttA},
 			changes: []ttChange{
-				{id: 1, reason: reasonAlive, desired: ttShaped(1, ttA, "ENABLE"), has: []string{"Line: 电信 -> 默认"}},
-				{id: 2, reason: reasonDuplicate, desired: ttRec(2, ttA, "联通", 60, "hc", "DISABLE")},
+				{id: 2, reason: reasonDuplicate, desired: ttLineID(ttShaped(2, ttA, "DISABLE"), "0"),
+					diffs: []string{"Status: ENABLE -> DISABLE"}},
 			},
 		},
 		{
-			name: "P9 unmanaged value has an unmanaged primary and a duplicate",
+			name: "AC8a unmanaged value has an unmanaged primary and a duplicate",
 			records: []*dnspod.RecordListItem{
-				ttRec(1, ttX, "电信", 60, "hc", "ENABLE"),
-				ttRec(2, ttX, "联通", 60, "hc", "ENABLE"),
+				ttShaped(1, ttX, "ENABLE"),
+				ttShaped(2, ttX, "ENABLE"),
 			},
 			alive:   []string{ttA},
 			creates: []string{ttA},
 			changes: []ttChange{
 				{id: 1, reason: reasonUnmanaged, desired: ttShaped(1, ttX, "DISABLE")},
-				{id: 2, reason: reasonDuplicate, desired: ttRec(2, ttX, "联通", 60, "hc", "DISABLE")},
+				{id: 2, reason: reasonDuplicate, desired: ttShaped(2, ttX, "DISABLE")},
 			},
 		},
 		{
-			name: "P9 dead value has a dead primary and a duplicate",
+			name: "AC8b dead value has a dead primary and a duplicate",
 			records: []*dnspod.RecordListItem{
-				ttRec(1, ttB, "电信", 60, "hc", "ENABLE"),
-				ttRec(2, ttB, "联通", 60, "hc", "ENABLE"),
+				ttShaped(1, ttB, "ENABLE"),
+				ttShaped(2, ttB, "ENABLE"),
 			},
 			alive:   []string{ttA},
 			creates: []string{ttA},
 			changes: []ttChange{
 				{id: 1, reason: reasonDead, desired: ttShaped(1, ttB, "DISABLE")},
-				{id: 2, reason: reasonDuplicate, desired: ttRec(2, ttB, "联通", 60, "hc", "DISABLE")},
+				{id: 2, reason: reasonDuplicate, desired: ttShaped(2, ttB, "DISABLE")},
 			},
 		},
 		{
@@ -255,18 +276,18 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "P13 changes follow remote order across interleaved values",
+			name: "AC9 changes follow remote order across interleaved values",
 			records: []*dnspod.RecordListItem{
-				ttRec(1, ttA, "电信", 60, "hc", "ENABLE"),
+				ttShaped(1, ttA, "DISABLE"),
 				ttShaped(2, ttX, "ENABLE"),
-				ttRec(3, ttA, "联通", 60, "hc", "ENABLE"),
+				ttShaped(3, ttA, "ENABLE"),
 				ttShaped(4, ttB, "ENABLE"),
 			},
 			alive: []string{ttA},
 			changes: []ttChange{
 				{id: 1, reason: reasonAlive, desired: ttShaped(1, ttA, "ENABLE")},
 				{id: 2, reason: reasonUnmanaged, desired: ttShaped(2, ttX, "DISABLE")},
-				{id: 3, reason: reasonDuplicate, desired: ttRec(3, ttA, "联通", 60, "hc", "DISABLE")},
+				{id: 3, reason: reasonDuplicate, desired: ttShaped(3, ttA, "DISABLE")},
 				{id: 4, reason: reasonDead, desired: ttShaped(4, ttB, "DISABLE")},
 			},
 		},
@@ -393,17 +414,18 @@ func TestReconcileIsPure(t *testing.T) {
 // ttPureInput needs two creates, two primary changes and two duplicate changes.
 func ttPureInput() (records []*dnspod.RecordListItem, configured, alive []string) {
 	return []*dnspod.RecordListItem{
-		ttLineID(ttRec(1, ttX, "电信", 600, "", "ENABLE"), "10=0"),
+		ttLineID(ttRec(1, ttX, "默认", 600, "", "ENABLE"), "0"),
 		ttShaped(2, ttA, "DISABLE"),
 		ttShaped(3, ttX, "ENABLE"),
-		ttLineID(ttRec(4, ttA, "联通", 60, "hc", "ENABLE"), "10=1"),
+		ttLineID(ttRec(4, ttA, "默认", 60, "hc", "ENABLE"), "0"),
 	}, []string{ttA, ttB, ttC}, []string{ttC, ttB, ttA}
 }
 
 func ttNonVacuous(t *testing.T, plan reconcilePlan) {
 	t.Helper()
-	if len(plan.Changes) == 0 {
-		t.Fatal("reconcile planned no changes for an input needing four; nothing to check")
+	if len(plan.Changes) != 4 || len(plan.Creates) != 2 {
+		t.Fatalf("reconcile planned %d changes and %d creates for an input needing 4 and 2; nothing reliable to check",
+			len(plan.Changes), len(plan.Creates))
 	}
 }
 
