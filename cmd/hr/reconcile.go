@@ -6,7 +6,7 @@ import (
 	dnspod "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/dnspod/v20210323"
 )
 
-// recordShape is the Line/TTL/Remark every managed A record is normalized to.
+// recordShape names the managed line (Line) and the TTL/Remark its records are normalized to.
 type recordShape struct {
 	Line   string
 	TTL    uint64
@@ -18,7 +18,7 @@ type changeReason int
 const (
 	reasonAlive     changeReason = iota // configured & alive → shape+ENABLE
 	reasonDead                          // configured & not alive → shape+DISABLE
-	reasonUnmanaged                     // not configured → shape+DISABLE
+	reasonUnmanaged                     // Value not configured (record still on the managed line) → shape+DISABLE
 	reasonDuplicate                     // extra record of a Value → Status DISABLE only
 )
 
@@ -34,19 +34,18 @@ type reconcilePlan struct {
 	Changes []recordChange // remote record order
 }
 
-// reconcile normalizes one record per Value and only disables its duplicates.
+// reconcile considers only records on the managed line: it normalizes the first one
+// per Value and only disables its duplicates; records on other lines are never touched.
 func reconcile(records []*dnspod.RecordListItem, configured, alive []string, shape recordShape) reconcilePlan {
 	configuredSet := ipSet(configured)
 	aliveSet := ipSet(alive)
 
-	// Primary per Value: the first record already on the managed line, else the first record.
 	primary := make(map[string]int)
 	for i, r := range records {
-		if !isHandleable(r) {
+		if !isManaged(r, shape.Line) {
 			continue
 		}
-		cur, ok := primary[*r.Value]
-		if !ok || (!onLine(records[cur], shape.Line) && onLine(r, shape.Line)) {
+		if _, ok := primary[*r.Value]; !ok {
 			primary[*r.Value] = i
 		}
 	}
@@ -64,7 +63,7 @@ func reconcile(records []*dnspod.RecordListItem, configured, alive []string, sha
 	}
 
 	for i, r := range records {
-		if !isHandleable(r) {
+		if !isManaged(r, shape.Line) {
 			continue
 		}
 		var desired *dnspod.RecordListItem
@@ -75,7 +74,8 @@ func reconcile(records []*dnspod.RecordListItem, configured, alive []string, sha
 				RecordId: r.RecordId,
 				Type:     new("A"),
 				Value:    r.Value,
-				Line:     new(shape.Line),
+				Line:     r.Line,
+				LineId:   r.LineId,
 				TTL:      new(shape.TTL),
 				Remark:   new(shape.Remark),
 				Status:   new(statusForReason(reason)),
@@ -115,8 +115,9 @@ func isHandleable(r *dnspod.RecordListItem) bool {
 	return r != nil && (r.Type == nil || *r.Type == "A") && r.Value != nil && r.RecordId != nil
 }
 
-func onLine(r *dnspod.RecordListItem, line string) bool {
-	return r.Line != nil && *r.Line == line
+// isManaged reports whether r is a handleable A record on the managed line.
+func isManaged(r *dnspod.RecordListItem, line string) bool {
+	return isHandleable(r) && r.Line != nil && *r.Line == line
 }
 
 func classifyValue(value string, configured, alive map[string]bool) changeReason {
