@@ -135,6 +135,12 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		{
+			name:    "P7 unmanaged record disabled in shape needs nothing",
+			records: []*dnspod.RecordListItem{ttShaped(1, ttX, "DISABLE")},
+			alive:   []string{ttA},
+			creates: []string{ttA},
+		},
+		{
 			name: "AC3 same-value record on another line beside the primary is not a duplicate",
 			records: []*dnspod.RecordListItem{
 				ttLineID(ttRec(1, ttA, "电信", 60, "hc", "ENABLE"), "10=0"),

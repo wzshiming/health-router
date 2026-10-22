@@ -24,7 +24,7 @@ const (
 
 type recordChange struct {
 	Record  *dnspod.RecordListItem // remote record, untouched
-	Desired *dnspod.RecordListItem // freshly allocated; RecordId and Value as Record, Type "A"
+	Desired *dnspod.RecordListItem // freshly allocated; RecordId, Value, Line and LineId as Record, Type "A"
 	Reason  changeReason
 	Diffs   []string // diffRecords(Record, Desired), never empty
 }
